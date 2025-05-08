@@ -5,8 +5,8 @@
 const char* ssid     = "n";
 const char* password = "123456789";
 
-// رمز عبور برای صفحه کنترل (به صورت ساده)
-const String pagePassword = "mySecret";  // <-- اینجا رمز خود را قرار دهید
+// رمز عبور برای صفحه کنترل
+const String pagePassword = "1234";
 
 // پایه LED
 const int ledPin = 2;
@@ -19,12 +19,17 @@ enum LedMode { IDLE, BLINKING, TURN_OFF };
 LedMode mode = IDLE;
 
 // تایمرها
-unsigned long blinkEnd     = 0;
-unsigned long lastToggle   = 0;
+unsigned long blinkEnd      = 0;
+unsigned long lastToggle    = 0;
 unsigned long wifiLastCheck = 0;
-bool ledState              = LOW;
+bool ledState               = LOW;
 
-// تایم‌اوت اتصال وای‌فای (۱۰ ثانیه)
+// HTTPSession tracking
+String sessionIP       = "";   // IP آدرس کاربر لاگین شده
+unsigned long loginTime = 0;    // زمان لاگین برای تایم‌اوت
+const unsigned long SESSION_TIMEOUT = 600000; // 10 دقیقه
+
+// تایم‌اوت اتصال وای‌فای
 const unsigned long WIFI_TIMEOUT = 10000;
 
 // صفحه HTML کنترل LED با بلوک ورود
@@ -49,26 +54,42 @@ const char* htmlPage = R"rawliteral(
   <div class="login-block" id="login">
     <h3>لطفاً رمز عبور را وارد کنید</h3>
     <input type="password" id="pwd" placeholder="رمز عبور">
-    <button onclick="checkPassword()">ورود</button>
+    <button onclick="doLogin()">ورود</button>
     <p id="login-msg" style="color:red;"></p>
   </div>
 
   <!-- بلوک کنترل -->
   <div class="control-block hidden" id="control">
     <button onclick="toggleLED()">تغییر وضعیت LED</button>
+    <button onclick="doLogout()" style="margin-left:10px;">خروج</button>
     <p id="status"></p>
   </div>
 
   <script>
-    function checkPassword() {
+    function doLogin() {
       const pwd = document.getElementById('pwd').value;
-      if (pwd === '%PASSWORD%') {
-        document.getElementById('login').classList.add('hidden');
-        document.getElementById('control').classList.remove('hidden');
-        updateState();
-      } else {
-        document.getElementById('login-msg').innerText = 'رمز اشتباه است';
-      }
+      fetch(`/login?pwd=${pwd}`)
+        .then(r => r.text())
+        .then(res => {
+          if (res === 'OK') {
+            document.getElementById('login').classList.add('hidden');
+            document.getElementById('control').classList.remove('hidden');
+            updateState();
+          } else if (res === 'BUSY') {
+            document.getElementById('login-msg').innerText = 'کاربر دیگری در حال استفاده است';
+          } else {
+            document.getElementById('login-msg').innerText = 'رمز اشتباه است';
+          }
+        });
+    }
+
+    function doLogout() {
+      fetch('/logout').then(() => {
+        document.getElementById('control').classList.add('hidden');
+        document.getElementById('login').classList.remove('hidden');
+        document.getElementById('pwd').value = '';
+        document.getElementById('login-msg').innerText = '';
+      });
     }
 
     function toggleLED() {
@@ -92,13 +113,41 @@ const char* htmlPage = R"rawliteral(
 </html>
 )rawliteral";
 
+String clientIP() {
+  return server.client().remoteIP().toString();
+}
+
 void handleRoot() {
-  String page = String(htmlPage);
-  page.replace("%PASSWORD%", pagePassword);
-  server.send(200, "text/html; charset=utf-8", page);
+  server.send(200, "text/html; charset=utf-8", htmlPage);
+}
+
+void handleLogin() {
+  String pwd = server.arg("pwd");
+  unsigned long now = millis();
+  // پاکسازی سشن منقضی
+  if (sessionIP != "" && now - loginTime > SESSION_TIMEOUT) sessionIP = "";
+
+  if (pwd != pagePassword) {
+    server.send(200, "text/plain; charset=utf-8", "FAIL");
+  } else if (sessionIP == "" || sessionIP == clientIP()) {
+    sessionIP = clientIP();
+    loginTime = now;
+    server.send(200, "text/plain; charset=utf-8", "OK");
+  } else {
+    server.send(200, "text/plain; charset=utf-8", "BUSY");
+  }
+}
+
+void handleLogout() {
+  if (clientIP() == sessionIP) sessionIP = "";
+  server.send(200, "text/plain; charset=utf-8", "BYE");
 }
 
 void handleToggle() {
+  if (clientIP() != sessionIP) {
+    server.send(403, "text/plain; charset=utf-8", "DENIED");
+    return;
+  }
   if (mode != BLINKING) {
     mode       = BLINKING;
     blinkEnd   = millis() + 10000;
@@ -112,6 +161,10 @@ void handleToggle() {
 }
 
 void handleState() {
+  if (clientIP() != sessionIP) {
+    server.send(403, "text/plain; charset=utf-8", "DENIED");
+    return;
+  }
   if (mode == BLINKING) {
     server.send(200, "text/plain; charset=utf-8", "BLINKING");
   } else {
@@ -145,6 +198,8 @@ void setup() {
   }
 
   server.on("/",       handleRoot);
+  server.on("/login",  handleLogin);
+  server.on("/logout", handleLogout);
   server.on("/toggle", handleToggle);
   server.on("/state",  handleState);
   server.begin();
@@ -166,12 +221,10 @@ void loop() {
         lastToggle = now;
       }
       break;
-
     case TURN_OFF:
       digitalWrite(ledPin, LOW);
       mode = IDLE;
       break;
-
     case IDLE:
     default:
       break;
