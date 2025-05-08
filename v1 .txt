@@ -122,60 +122,78 @@ const char* htmlPage = R"rawliteral(
   </div>
 
   <script>
-    let chart;
+    let chart = null;
     function initChart() {
+      if (chart) { chart.destroy(); }
       const ctx = document.getElementById('ledChart').getContext('2d');
       chart = new Chart(ctx, {
-        type: 'line', data: { labels: [], datasets: [{ label: 'LED State', data: [], fill: false, tension: 0.1 }] },
+        type: 'line',
+        data: { labels: [], datasets: [{ label: 'LED State', data: [], fill: false, tension: 0.1 }] },
         options: { scales: { y: { min: 0, max: 1, ticks: { stepSize: 1 } } } }
       });
     }
     function addData(state) {
+      if (!chart) return;
       const time = new Date().toLocaleTimeString();
+      const value = (state === 'ON' || state === 'BLINKING') ? 1 : 0;
       chart.data.labels.push(time);
-      chart.data.datasets[0].data.push(state==='ON'?1:0);
-      if (chart.data.labels.length>10) { chart.data.labels.shift(); chart.data.datasets[0].data.shift(); }
+      chart.data.datasets[0].data.push(value);
+      if (chart.data.labels.length > 10) {
+        chart.data.labels.shift();
+        chart.data.datasets[0].data.shift();
+      }
       chart.update();
     }
     function notify(message) {
       if (Notification.permission === 'granted') new Notification(message);
     }
     document.querySelector('.theme-switch').onclick = () => {
-      document.documentElement.dataset.theme = document.documentElement.dataset.theme==='dark'?'':'dark';
+      document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? '' : 'dark';
     };
     if (Notification.permission !== 'granted') Notification.requestPermission();
 
     function doLogin() {
       const pwd = document.getElementById('pwd').value;
-      fetch(`/login?pwd=${pwd}`).then(r=>r.text()).then(res=>{
-        const msg = document.getElementById('login-msg');
-        if (res==='OK') {
-          document.getElementById('login').classList.add('hidden');
-          document.getElementById('control').classList.remove('hidden');
-          msg.textContent=''; initChart();
-        } else if (res==='BUSY') msg.textContent='کاربر دیگری در حال استفاده است';
-        else msg.textContent='رمز اشتباه است';
-      });
+      fetch(`/login?pwd=${pwd}`)
+        .then(r => r.text())
+        .then(res => {
+          const msg = document.getElementById('login-msg');
+          if (res === 'OK') {
+            document.getElementById('login').classList.add('hidden');
+            document.getElementById('control').classList.remove('hidden');
+            msg.textContent = '';
+            initChart();
+          } else if (res === 'BUSY') msg.textContent = 'کاربر دیگری در حال استفاده است';
+          else msg.textContent = 'رمز اشتباه است';
+        });
     }
     function doLogout() {
-      fetch('/logout').then(()=>{
+      fetch('/logout').then(() => {
         document.getElementById('control').classList.add('hidden');
         document.getElementById('login').classList.remove('hidden');
+        if (chart) { chart.destroy(); chart = null; }
       });
     }
     function toggleLED() {
-      fetch('/toggle').then(r=>r.text()).then(s=>{
-        document.getElementById('status').textContent='وضعیت LED: '+s;
-        addData(s==='ON'? 'ON':'OFF'); notify('LED '+s);
-      });
+      fetch('/toggle')
+        .then(r => r.text())
+        .then(s => {
+          document.getElementById('status').textContent = 'وضعیت LED: ' + s;
+          addData(s);
+          notify('LED ' + s);
+        });
     }
     function updateState() {
-      fetch('/state').then(r=>r.text()).then(s=>{
-        document.getElementById('status').textContent='وضعیت LED: '+s;
-        addData(s==='ON'?'ON':'OFF');
-      });
+      fetch('/state')
+        .then(r => r.text())
+        .then(s => {
+          document.getElementById('status').textContent = 'وضعیت LED: ' + s;
+          addData(s);
+        });
     }
-    setInterval(()=>{ if(!document.getElementById('control').classList.contains('hidden')) updateState(); },1000);
+    setInterval(() => {
+      if (!document.getElementById('control').classList.contains('hidden')) updateState();
+    }, 1000);
   </script>
 </body>
 </html>
@@ -195,10 +213,10 @@ void setup() {
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, LOW);
 
-  unsigned long start=millis();
-  WiFi.begin(ssid,password);
-  while(WiFi.status()!=WL_CONNECTED && millis()-start< WIFI_TIMEOUT) delay(500);
-  if(WiFi.status()==WL_CONNECTED) Serial.println(WiFi.localIP());
+  unsigned long start = millis();
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_TIMEOUT) delay(500);
+  if (WiFi.status() == WL_CONNECTED) Serial.println(WiFi.localIP());
   else { WiFi.softAP("ESP32-Setup"); Serial.println(WiFi.softAPIP()); }
 
   server.on("/",       handleRoot);
@@ -211,19 +229,20 @@ void setup() {
 
 void loop() {
   server.handleClient();
-  unsigned long now=millis();
-  switch(mode) {
+  unsigned long now = millis();
+  switch (mode) {
     case BLINKING:
-      if(now>=blinkEnd){ digitalWrite(ledPin,LOW); mode=IDLE; }
-      else if(now-lastToggle>=500){ ledState=!ledState; digitalWrite(ledPin,ledState); lastToggle=now; }
+      if (now >= blinkEnd) { digitalWrite(ledPin, LOW); mode = IDLE; }
+      else if (now - lastToggle >= 500) { ledState = !ledState; digitalWrite(ledPin, ledState); lastToggle = now; }
       break;
-    case TURN_OFF: digitalWrite(ledPin,LOW); mode=IDLE; break;
+    case TURN_OFF: digitalWrite(ledPin, LOW); mode = IDLE; break;
     default: break;
   }
-  if(WiFi.status()!=WL_CONNECTED && now-wifiLastCheck>=5000){ WiFi.reconnect(); wifiLastCheck=now; }
+  if (WiFi.status() != WL_CONNECTED && now - wifiLastCheck >= 5000) { WiFi.reconnect(); wifiLastCheck = now; }
 }
 
-void handleLogin(){ String pwd=server.arg("pwd"); unsigned long now=millis(); if(sessionIP!="" && now-loginTime>SESSION_TIMEOUT) sessionIP=""; if(pwd!=pagePassword) server.send(200,"text/plain; charset=utf-8","FAIL"); else if(sessionIP==""||sessionIP==clientIP()){ sessionIP=clientIP(); loginTime=now; server.send(200,"text/plain; charset=utf-8","OK"); } else server.send(200,"text/plain; charset=utf-8","BUSY"); }
-void handleLogout(){ if(clientIP()==sessionIP) sessionIP=""; server.send(200,"text/plain; charset=utf-8","BYE"); }
-void handleToggle(){ if(clientIP()!=sessionIP){ server.send(403,"text/plain; charset=utf-8","DENIED"); return;} if(mode!=BLINKING){mode=BLINKING; blinkEnd=millis()+10000; lastToggle=millis(); ledState=LOW; server.send(200,"text/plain; charset=utf-8","BLINKING"); } else { mode=TURN_OFF; server.send(200,"text/plain; charset=utf-8","OFF"); } }
-void handleState(){ if(clientIP()!=sessionIP){ server.send(403,"text/plain; charset=utf-8","DENIED"); return;} if(mode==BLINKING) server.send(200,"text/plain; charset=utf-8","BLINKING"); else server.send(200,"text/plain; charset=utf-8", digitalRead(ledPin)?"ON":"OFF"); }
+// توابع هندلرها
+void handleLogin() { String pwd = server.arg("pwd"); unsigned long now = millis(); if (sessionIP != "" && now - loginTime > SESSION_TIMEOUT) sessionIP = ""; if (pwd != pagePassword) server.send(200, "text/plain; charset=utf-8", "FAIL"); else if (sessionIP == "" || sessionIP == clientIP()) { sessionIP = clientIP(); loginTime = now; server.send(200, "text/plain; charset=utf-8", "OK"); } else server.send(200, "text/plain; charset=utf-8", "BUSY"); }
+void handleLogout() { if (clientIP() == sessionIP) sessionIP = ""; server.send(200, "text/plain; charset=utf-8", "BYE"); }
+void handleToggle() { if (clientIP() != sessionIP) { server.send(403, "text/plain; charset=utf-8", "DENIED"); return; } if (mode != BLINKING) { mode = BLINKING; blinkEnd = millis() + 10000; lastToggle = millis(); ledState = LOW; server.send(200, "text/plain; charset=utf-8", "BLINKING"); } else { mode = TURN_OFF; server.send(200, "text/plain; charset=utf-8", "OFF"); } }
+void handleState() { if (clientIP() != sessionIP) { server.send(403, "text/plain; charset=utf-8", "DENIED"); return; } if (mode == BLINKING) server.send(200, "text/plain; charset=utf-8", "BLINKING"); else server.send(200, "text/plain; charset=utf-8", digitalRead(ledPin) ? "ON" : "OFF"); }
