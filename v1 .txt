@@ -1,0 +1,184 @@
+#include <WiFi.h>
+#include <WebServer.h>
+
+// ——— تنظیمات شبکه مودم ———
+const char* ssid     = "n";
+const char* password = "123456789";
+
+// رمز عبور برای صفحه کنترل (به صورت ساده)
+const String pagePassword = "mySecret";  // <-- اینجا رمز خود را قرار دهید
+
+// پایه LED
+const int ledPin = 2;
+
+// وب‌سرور روی پورت 80
+WebServer server(80);
+
+// مودهای چشمک
+enum LedMode { IDLE, BLINKING, TURN_OFF };
+LedMode mode = IDLE;
+
+// تایمرها
+unsigned long blinkEnd     = 0;
+unsigned long lastToggle   = 0;
+unsigned long wifiLastCheck = 0;
+bool ledState              = LOW;
+
+// تایم‌اوت اتصال وای‌فای (۱۰ ثانیه)
+const unsigned long WIFI_TIMEOUT = 10000;
+
+// صفحه HTML کنترل LED با بلوک ورود
+const char* htmlPage = R"rawliteral(
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+  <meta charset="utf-8">
+  <title>کنترل LED با امنیت</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; padding: 2rem; }
+    .login-block, .control-block { border: 1px solid #ccc; padding: 1rem; margin: 1rem auto; width: 300px; border-radius: 8px; box-shadow: 2px 2px 8px rgba(0,0,0,0.1); }
+    .hidden { display: none; }
+    input { width: 100%; padding: 0.5rem; margin: 0.5rem 0; }
+    button { padding: 0.5rem 1rem; border: none; border-radius: 4px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h2>کنترل LED از طریق ESP32-C3</h2>
+
+  <!-- بلوک ورود -->
+  <div class="login-block" id="login">
+    <h3>لطفاً رمز عبور را وارد کنید</h3>
+    <input type="password" id="pwd" placeholder="رمز عبور">
+    <button onclick="checkPassword()">ورود</button>
+    <p id="login-msg" style="color:red;"></p>
+  </div>
+
+  <!-- بلوک کنترل -->
+  <div class="control-block hidden" id="control">
+    <button onclick="toggleLED()">تغییر وضعیت LED</button>
+    <p id="status"></p>
+  </div>
+
+  <script>
+    function checkPassword() {
+      const pwd = document.getElementById('pwd').value;
+      if (pwd === '%PASSWORD%') {
+        document.getElementById('login').classList.add('hidden');
+        document.getElementById('control').classList.remove('hidden');
+        updateState();
+      } else {
+        document.getElementById('login-msg').innerText = 'رمز اشتباه است';
+      }
+    }
+
+    function toggleLED() {
+      fetch('/toggle')
+        .then(r => r.text())
+        .then(s => document.getElementById('status').innerText = 'وضعیت LED: ' + s)
+        .catch(e => alert('خطا: ' + e));
+    }
+
+    function updateState() {
+      fetch('/state')
+        .then(r => r.text())
+        .then(s => document.getElementById('status').innerText = 'وضعیت LED: ' + s);
+    }
+
+    setInterval(() => {
+      if (!document.getElementById('control').classList.contains('hidden')) updateState();
+    }, 1000);
+  </script>
+</body>
+</html>
+)rawliteral";
+
+void handleRoot() {
+  String page = String(htmlPage);
+  page.replace("%PASSWORD%", pagePassword);
+  server.send(200, "text/html; charset=utf-8", page);
+}
+
+void handleToggle() {
+  if (mode != BLINKING) {
+    mode       = BLINKING;
+    blinkEnd   = millis() + 10000;
+    lastToggle = millis();
+    ledState   = LOW;
+    server.send(200, "text/plain; charset=utf-8", "BLINKING");
+  } else {
+    mode = TURN_OFF;
+    server.send(200, "text/plain; charset=utf-8", "OFF");
+  }
+}
+
+void handleState() {
+  if (mode == BLINKING) {
+    server.send(200, "text/plain; charset=utf-8", "BLINKING");
+  } else {
+    bool physical = digitalRead(ledPin);
+    server.send(200, "text/plain; charset=utf-8", physical ? "ON" : "OFF");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW);
+
+  unsigned long start = millis();
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_TIMEOUT) {
+    delay(500);
+    Serial.print(".");
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.print("Connected! IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\nWiFi timeout! Starting ESP as AP.");
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("ESP32-Setup");
+    Serial.print("AP IP: ");
+    Serial.println(WiFi.softAPIP());
+  }
+
+  server.on("/",       handleRoot);
+  server.on("/toggle", handleToggle);
+  server.on("/state",  handleState);
+  server.begin();
+  Serial.println("Web server started.");
+}
+
+void loop() {
+  server.handleClient();
+
+  unsigned long now = millis();
+  switch (mode) {
+    case BLINKING:
+      if (now >= blinkEnd) {
+        digitalWrite(ledPin, LOW);
+        mode = IDLE;
+      } else if (now - lastToggle >= 500) {
+        ledState = !ledState;
+        digitalWrite(ledPin, ledState);
+        lastToggle = now;
+      }
+      break;
+
+    case TURN_OFF:
+      digitalWrite(ledPin, LOW);
+      mode = IDLE;
+      break;
+
+    case IDLE:
+    default:
+      break;
+  }
+
+  if (WiFi.status() != WL_CONNECTED && now - wifiLastCheck >= 5000) {
+    WiFi.reconnect();
+    wifiLastCheck = now;
+  }
+}
