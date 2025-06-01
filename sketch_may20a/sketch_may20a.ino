@@ -2,8 +2,11 @@
 #include <WebServer.h>
 #include <Preferences.h>
 
-sting ssid = "";
-string password = "";
+String ssid = "";
+String password = "";
+
+String e_ssid ="esp_setup";
+String e_password="1234";
 
 WebServer server(80);
 const int ledpin1 = 2;
@@ -82,6 +85,35 @@ const char MAIN_page[] PROGMEM = R"rawliteral(
 
 )rawliteral";
 
+
+void handleRoot() {
+  String html = "<html><body><h1>WiFi Setup</h1>";
+  html += "<form action='/save' method='POST'>";
+  html += "SSID: <input name='ssid'><br>";
+  html += "Password: <input name='pass' type='password'><br>";
+  html += "<input type='submit'></form></body></html>";
+
+  server.send(200, "text/html", html);
+}
+
+
+void handleSave() {
+  String newSSID = server.arg("ssid");
+  String newPass = server.arg("pass");
+
+  if (newSSID != "" && newPass != "") {
+    pr.putString("ssid", newSSID);
+    pr.putString("pass", newPass);
+
+    server.send(200, "text/html", "<html><body><h1>Saved. Rebooting...</h1></body></html>");
+    delay(2000);
+    ESP.restart();
+  } else {
+    server.send(400, "text/html", "<html><body><h1>Invalid input</h1></body></html>");
+  }
+}
+
+
 void handleLED() {
   String state = server.arg("state");
   String target = server.arg("target");
@@ -106,27 +138,42 @@ void handleLED() {
   }
 }
 
+void setup_wifi(){
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(e_ssid,e_password);
 
-void connectwf(string ssid,string password){
+  Serial.println("ap started ...");
+  Serial.println("SSID: "+e_ssid+"\tPASS: "+e_password+"\tIP: "+WiFi.softAPIP());
 
-    wifi.begin(ssid,password);
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/save", HTTP_POST, handleSave);
+
+  server.begin();
+
+
+}
+
+bool connectwf(String ssid,String password){
+
+    WiFi.begin(ssid,password);
     Serial.println("connecting...");
     int tries=1;
-    while (wifi.status()!=WL_CONNECTED && tries<=20){
+    while (WiFi.status()!=WL_CONNECTED && tries<=20){
       delay(500);
-      Serial.println("trying : "+string(tries)+" ...");
+      Serial.println("trying : "+String(tries)+" ...");
 
     }
 
-    if (wifi.status()==WL_CONNECTED){
+    if (WiFi.status()==WL_CONNECTED){
 
       Serial.println("connected");
-     
+      Serial.println(WiFi.localIP());
+      return true;
 
     }
     else{
-      serial.println("faild to connect");
-    
+      Serial.println("faild to connect");
+      return false;
 
     }
 
@@ -147,12 +194,14 @@ void setup() {
   password=pr.getString("pass","");
 
   if (ssid==""||password==""){
+    setup_wifi();
 
   }
   else{
-    
-    connectwf(ssid,password);
-    if (wifi.status()!=WL_CONNECTED){
+  
+    if (!connectwf(ssid,password)){
+      Serial.println("entring setup mode");
+      setup_wifi();
 
     }
   }
@@ -162,41 +211,9 @@ void setup() {
 
 
 
-  if (ssid == "" || password == "") {
-    startSetupMode(); // وارد حالت تنظیمات شود
-  } else {
-    WiFi.begin(ssid.c_str(), password.c_str());
-    Serial.print("Connecting");
-    int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 20) {
-      delay(500);
-      Serial.print(".");
-      retries++;
-
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\nConnected! IP:");
-      Serial.println(WiFi.localIP());
-  } else {
-      Serial.println("\nFailed to connect. Entering setup mode.");
-      startSetupMode();
-  }
-
-
-  }
-
-  WiFi.begin(ssid, password);
-  Serial.print("CONNECTING ...");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-  Serial.println("WiFi CONNECTED . IP:");
-  Serial.println(WiFi.localIP());
-
   server.on("/", HTTP_GET, []() {
     server.send_P(200, "text/html", MAIN_page);
-  });
+    });
 
   server.on("/led", handleLED);
 
